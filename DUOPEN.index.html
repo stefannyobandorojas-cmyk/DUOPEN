@@ -1,0 +1,351 @@
+
+<h2 class="sr-only">Simulador 3D premium del esfero-regla triangular con vértices redondeados, cuerpo transparente y cartucho de tinta azul visible en el interior.</h2>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+#app{display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px 0;font-family:sans-serif}
+#cv{border-radius:16px;border:0.5px solid rgba(128,128,128,0.15);cursor:grab;display:block;max-width:100%;background:#f8f8f8}
+#cv:active{cursor:grabbing}
+.ctrlrow{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;align-items:flex-end}
+.sl{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:#888}
+.sl input{width:100px}
+.modes{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.modes button{font-size:12px;padding:6px 18px;border-radius:20px;border:1px solid #ddd;background:#fff;color:#333;cursor:pointer;transition:all 0.15s;font-weight:500}
+.modes button.on{background:#1a3a6e;color:#fff;border-color:#1a3a6e}
+</style>
+<div id="app">
+  <div class="ctrlrow">
+    <div class="sl">Rotar<input type="range" id="sry" min="-180" max="180" value="28" step="1"></div>
+    <div class="sl">Inclinar<input type="range" id="srx" min="-65" max="65" value="-20" step="1"></div>
+    <div class="sl">Zoom<input type="range" id="szm" min="40" max="220" value="100" step="1"></div>
+  </div>
+  <div class="modes">
+    <button class="on" id="mAll" onclick="setMode('all')">Esfero completo</button>
+    <button id="mInk" onclick="setMode('ink')">Solo tinta</button>
+    <button id="mBody" onclick="setMode('body')">Solo cartucho</button>
+  </div>
+  <canvas id="cv" width="660" height="480"></canvas>
+</div>
+<script>
+const cv=document.getElementById('cv'),G=cv.getContext('2d');
+let RY=28,RX=-20,ZM=100,MODE='all';
+let drag=false,lx=0,ly=0;
+
+cv.addEventListener('mousedown',e=>{drag=true;lx=e.clientX;ly=e.clientY});
+cv.addEventListener('touchstart',e=>{drag=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY},{passive:true});
+window.addEventListener('mouseup',()=>drag=false);
+window.addEventListener('touchend',()=>drag=false);
+window.addEventListener('mousemove',e=>{if(!drag)return;RY+=(e.clientX-lx)*0.45;RX-=(e.clientY-ly)*0.28;RX=Math.max(-65,Math.min(65,RX));lx=e.clientX;ly=e.clientY;rd()});
+window.addEventListener('touchmove',e=>{if(!drag)return;RY+=(e.touches[0].clientX-lx)*0.45;RX-=(e.touches[0].clientY-ly)*0.28;RX=Math.max(-65,Math.min(65,RX));lx=e.touches[0].clientX;ly=e.touches[0].clientY;rd()},{passive:true});
+['sry','srx','szm'].forEach(id=>document.getElementById(id).addEventListener('input',e=>{
+  if(id==='sry')RY=+e.target.value;
+  else if(id==='srx')RX=+e.target.value;
+  else ZM=+e.target.value;
+  rd();
+}));
+
+function setMode(m){
+  MODE=m;
+  document.querySelectorAll('.modes button').forEach(b=>b.classList.remove('on'));
+  const map={all:'mAll',ink:'mInk',body:'mBody'};
+  document.getElementById(map[m]).classList.add('on');
+  rd();
+}
+
+function pr(x,y,z){
+  const FOV=800;
+  const ry=RY*Math.PI/180,rx=RX*Math.PI/180;
+  const cY=Math.cos(ry),sY=Math.sin(ry),cX=Math.cos(rx),sX=Math.sin(rx);
+  const x1=x*cY+z*sY,z1=-x*sY+z*cY;
+  const y1=y*cX-z1*sX,z2=y*sX+z1*cX;
+  const sc=FOV/(FOV+z2+600);
+  return{px:330+x1*sc*ZM/100,py:250+y1*sc*ZM/100,z:z2,sc};
+}
+
+// Rounded equilateral triangle profile
+function buildRTri(R,cr,steps){
+  const pts=[];
+  const ao=-Math.PI/2;
+  for(let v=0;v<3;v++){
+    const angV=(v/3)*Math.PI*2+ao;
+    const vx=Math.cos(angV)*R, vy=Math.sin(angV)*R;
+    const angA=angV+Math.PI*(2/3), angB=angV-Math.PI*(2/3);
+    const n1=[Math.cos(angA),Math.sin(angA)], n2=[Math.cos(angB),Math.sin(angB)];
+    const bx=(n1[0]+n2[0]),by=(n1[1]+n2[1]);
+    const bl=Math.sqrt(bx*bx+by*by);
+    const inset=cr/Math.sin(Math.PI/3);
+    const cx=vx+(bx/bl)*inset, cy=vy+(by/bl)*inset;
+    const aS=Math.atan2(vy-cy,vx-cx)+Math.PI*2/3;
+    const aSpan=-Math.PI*2/3;
+    for(let i=0;i<=steps;i++){
+      const a=aS+aSpan*(i/steps);
+      pts.push({x:cx+Math.cos(a)*cr,y:cy+Math.sin(a)*cr,face:v,t:i/steps});
+    }
+  }
+  return pts;
+}
+
+const PROF=buildRTri(13,4.5,10);
+const NP=PROF.length;
+const Z0=-240,Z1=55,TIP_Z=Z1+34;
+
+// ink cartridge profile (circle)
+const INK_R=5;
+const INK_SEGS=20;
+
+function rotN(nx,ny,nz){
+  const ry=RY*Math.PI/180,rx=RX*Math.PI/180;
+  const cY=Math.cos(ry),sY=Math.sin(ry),cX=Math.cos(rx),sX=Math.sin(rx);
+  const x1=nx*cY+nz*sY,z1=-nx*sY+nz*cY;
+  const y1=ny*cX-z1*sX,z2=ny*sX+z1*cX;
+  return[x1,y1,z2];
+}
+const L=[0.5,-0.7,0.52];
+const L2=[-0.4,0.2,0.35];
+function diff(nx,ny,nz){
+  const[rx,ry2,rz]=rotN(nx,ny,nz);
+  const d=rx*L[0]+ry2*L[1]+rz*L[2];
+  const d2=rx*L2[0]+ry2*L2[1]+rz*L2[2];
+  return Math.max(0.22,d*0.68+Math.max(0,d2)*0.12+0.3);
+}
+function spec(nx,ny,nz,pw=32){
+  const[rx,ry2,rz]=rotN(nx,ny,nz);
+  const d=rx*L[0]+ry2*L[1]+rz*L[2];
+  const ex=rx-2*d*rx,ey=ry2-2*d*ry2,ez=rz-2*d*rz;
+  return Math.pow(Math.max(0,ez),pw);
+}
+function fN(pi){
+  const p=PROF[pi%NP],pn=PROF[(pi+1)%NP];
+  const dx=pn.x-p.x,dy=pn.y-p.y,l=Math.sqrt(dx*dx+dy*dy);
+  return[dy/l,-dx/l,0];
+}
+
+const ZSTEPS=130;
+
+function rd(){
+  G.clearRect(0,0,660,480);
+
+  // subtle ground shadow
+  G.save();
+  G.beginPath();
+  G.ellipse(330,440,200*ZM/100,18*ZM/100,0,0,Math.PI*2);
+  G.fillStyle='rgba(0,0,0,0.07)';G.fill();G.restore();
+
+  const showBody=MODE==='all'||MODE==='body';
+  const showInk=MODE==='all'||MODE==='ink';
+
+  // collect all render objects
+  const objs=[];
+
+  if(showInk){
+    // ink cylinder quads
+    for(let zi=0;zi<ZSTEPS;zi++){
+      const za=Z0+6+(Z1-Z0-10)*zi/ZSTEPS;
+      const zb=Z0+6+(Z1-Z0-10)*(zi+1)/ZSTEPS;
+      // ink only 88% full
+      if(zi/ZSTEPS>0.88) continue;
+      for(let si=0;si<INK_SEGS;si++){
+        const a0=(si/INK_SEGS)*Math.PI*2,a1=((si+1)/INK_SEGS)*Math.PI*2;
+        const nx=Math.cos((a0+a1)/2),ny=Math.sin((a0+a1)/2);
+        const br=diff(nx,ny,0);
+        const sp=spec(nx,ny,0,20);
+        const A=pr(Math.cos(a0)*INK_R,Math.sin(a0)*INK_R,za);
+        const B=pr(Math.cos(a1)*INK_R,Math.sin(a1)*INK_R,za);
+        const C=pr(Math.cos(a1)*INK_R,Math.sin(a1)*INK_R,zb);
+        const D=pr(Math.cos(a0)*INK_R,Math.sin(a0)*INK_R,zb);
+        const ri=Math.min(255,20+sp*160|0);
+        const gi=Math.min(255,20+sp*80|0);
+        const bi=Math.min(255,100+br*120+sp*140|0);
+        objs.push({type:'ink',A,B,C,D,z:(A.z+B.z+C.z+D.z)/4,col:`rgb(${ri},${gi},${bi})`});
+      }
+    }
+    // ink front cap (circle)
+    const inkCapPts=[];
+    for(let si=0;si<INK_SEGS;si++){
+      const a=(si/INK_SEGS)*Math.PI*2;
+      inkCapPts.push(pr(Math.cos(a)*INK_R,Math.sin(a)*INK_R,Z0+6));
+    }
+    const inkCapZ=inkCapPts.reduce((s,p)=>s+p.z,0)/INK_SEGS;
+    objs.push({type:'inkCap',pts:inkCapPts,z:inkCapZ});
+
+    // ink tip cone (small metal cone)
+    for(let si=0;si<INK_SEGS;si++){
+      const a0=(si/INK_SEGS)*Math.PI*2,a1=((si+1)/INK_SEGS)*Math.PI*2;
+      const A=pr(Math.cos(a0)*INK_R,Math.sin(a0)*INK_R,Z1-2);
+      const B=pr(Math.cos(a1)*INK_R,Math.sin(a1)*INK_R,Z1-2);
+      const T=pr(0,0,Z1+8);
+      const br=diff(Math.cos((a0+a1)/2)*0.7,Math.sin((a0+a1)/2)*0.7,0.7)*0.85;
+      const v=Math.min(255,155+br*60|0);
+      objs.push({type:'inkTip',A,B,T,z:(A.z+B.z+T.z)/3,col:`rgb(${v},${v},${v+5})`});
+    }
+    // tip ball
+    const tp=pr(0,0,TIP_Z-22);
+    objs.push({type:'ball',pt:tp,z:tp.z});
+  }
+
+  if(showBody){
+    // body quads (transparent plastic)
+    for(let zi=0;zi<ZSTEPS;zi++){
+      const za=Z0+(Z1-Z0)*zi/ZSTEPS;
+      const zb=Z0+(Z1-Z0)*(zi+1)/ZSTEPS;
+      const zm=(za+zb)/2;
+      for(let pi=0;pi<NP;pi++){
+        const p0=PROF[pi],p1=PROF[(pi+1)%NP];
+        const A=pr(p0.x,p0.y,za),B=pr(p1.x,p1.y,za);
+        const C=pr(p1.x,p1.y,zb),D=pr(p0.x,p0.y,zb);
+        const n=fN(pi);
+        const br=diff(...n),sp=spec(...n,36);
+        objs.push({type:'body',A,B,C,D,z:(A.z+B.z+C.z+D.z)/4,face:p0.face,pi,zm,br,sp,n});
+      }
+    }
+    // body caps
+    const capB=PROF.map(p=>pr(p.x,p.y,Z0));
+    const capF=PROF.map(p=>pr(p.x,p.y,Z1));
+    objs.push({type:'capB',pts:capB,z:capB.reduce((s,p)=>s+p.z,0)/NP});
+    objs.push({type:'capF',pts:capF,z:capF.reduce((s,p)=>s+p.z,0)/NP});
+
+    // tip cone (plastic nose)
+    const tipPt=pr(0,0,TIP_Z);
+    for(let pi=0;pi<NP;pi++){
+      const p0=PROF[pi],p1=PROF[(pi+1)%NP];
+      const A=pr(p0.x,p0.y,Z1),B=pr(p1.x,p1.y,Z1);
+      const mx=(p0.x+p1.x)/2,my=(p0.y+p1.y)/2;
+      const ml=Math.sqrt(mx*mx+my*my);
+      const n=[mx/ml*0.65,my/ml*0.65,0.76];
+      const nl=Math.sqrt(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]);
+      const br=diff(n[0]/nl,n[1]/nl,n[2]/nl)*0.9;
+      const sp=spec(n[0]/nl,n[1]/nl,n[2]/nl,22)*0.65;
+      objs.push({type:'tipBody',A,B,T:tipPt,z:(A.z+B.z+tipPt.z)/3,br,sp,face:p0.face});
+    }
+  }
+
+  // sort back-to-front
+  objs.sort((a,b)=>b.z-a.z);
+
+  for(const o of objs){
+    if(o.type==='body'){
+      const{A,B,C,D,face,pi,zm,br,sp}=o;
+      G.beginPath();G.moveTo(A.px,A.py);G.lineTo(B.px,B.py);G.lineTo(C.px,C.py);G.lineTo(D.px,D.py);G.closePath();
+      // transparent clear plastic with tinted tinge
+      const alpha=showInk?0.18:0.78;
+      const rC=Math.min(255,210+sp*200|0),gC=Math.min(255,225+sp*180|0),bC=Math.min(255,240+sp*200|0);
+      G.fillStyle=`rgba(${rC},${gC},${bC},${alpha})`;G.fill();
+      // edge outline for plastic definition
+      G.strokeStyle=`rgba(120,160,200,${showInk?0.35:0.55})`;G.lineWidth=0.6;G.stroke();
+
+      // specular sheen stripe (plastic highlight)
+      const p0x=PROF[pi].x,p0y=PROF[pi].y;
+      const dist=Math.sqrt(p0x*p0x+p0y*p0y);
+      if(sp>0.15&&dist>8){
+        G.beginPath();G.moveTo(A.px,A.py);G.lineTo(B.px,B.py);G.lineTo(C.px,C.py);G.lineTo(D.px,D.py);G.closePath();
+        G.fillStyle=`rgba(255,255,255,${sp*0.22})`;G.fill();
+      }
+
+      // ruler marks on flat face zones (face 0, mid-section of arc)
+      if(face===0&&PROF[pi%NP].t>0.15&&PROF[pi%NP].t<0.85){
+        const totalMM=(Z1-Z0)/2.5;
+        const t=(zm-Z0)/(Z1-Z0);
+        const mm=Math.round(t*totalMM);
+        const isCm=mm%10===0,isHf=mm%5===0;
+        const ratio=isCm?0.62:isHf?0.43:0.26;
+        const mx0=(A.px+D.px)/2,my0=(A.py+D.py)/2;
+        const mx1=(B.px+C.px)/2,my1=(B.py+C.py)/2;
+        const ex=mx0+ratio*(mx1-mx0),ey=my0+ratio*(my1-my0);
+        G.beginPath();G.moveTo(mx0,my0);G.lineTo(ex,ey);
+        G.strokeStyle=`rgba(40,60,120,${0.75*(showInk?0.7:1)})`;
+        G.lineWidth=isCm?1.3:isHf?0.8:0.42;G.stroke();
+        if(isCm&&mm>0&&mm<totalMM-2){
+          const lx2=ex+(ex-mx0)*0.28,ly2=ey+(ey-my0)*0.28;
+          G.save();
+          const fs=Math.max(5.5,8*A.sc*(ZM/100));
+          G.font=`600 ${fs}px sans-serif`;
+          G.fillStyle=`rgba(30,50,110,${showInk?0.65:0.85})`;
+          G.textAlign='center';G.textBaseline='middle';
+          G.fillText(mm/10,lx2,ly2);G.restore();
+        }
+      }
+    }
+    else if(o.type==='ink'){
+      G.beginPath();G.moveTo(o.A.px,o.A.py);G.lineTo(o.B.px,o.B.py);G.lineTo(o.C.px,o.C.py);G.lineTo(o.D.px,o.D.py);G.closePath();
+      G.fillStyle=o.col;G.fill();
+    }
+    else if(o.type==='inkCap'){
+      G.beginPath();o.pts.forEach((p,i)=>i?G.lineTo(p.px,p.py):G.moveTo(p.px,p.py));G.closePath();
+      G.fillStyle='#1a2060';G.fill();G.strokeStyle='rgba(0,0,0,0.2)';G.lineWidth=0.4;G.stroke();
+    }
+    else if(o.type==='inkTip'){
+      G.beginPath();G.moveTo(o.A.px,o.A.py);G.lineTo(o.B.px,o.B.py);G.lineTo(o.T.px,o.T.py);G.closePath();
+      G.fillStyle=o.col;G.fill();G.strokeStyle='rgba(0,0,0,0.12)';G.lineWidth=0.3;G.stroke();
+    }
+    else if(o.type==='ball'){
+      const tp=o.pt;
+      G.beginPath();G.arc(tp.px,tp.py,3.2*tp.sc,0,Math.PI*2);G.fillStyle='#202090';G.fill();
+      G.beginPath();G.arc(tp.px-tp.sc*0.9,tp.py-tp.sc*0.9,tp.sc,0,Math.PI*2);G.fillStyle='rgba(160,180,255,0.55)';G.fill();
+    }
+    else if(o.type==='tipBody'){
+      G.beginPath();G.moveTo(o.A.px,o.A.py);G.lineTo(o.B.px,o.B.py);G.lineTo(o.T.px,o.T.py);G.closePath();
+      const alpha=showInk?0.22:0.75;
+      const v=Math.min(255,210+o.sp*190|0);
+      G.fillStyle=`rgba(${v},${v+8},${v+15},${alpha})`;G.fill();
+      G.strokeStyle=`rgba(120,160,200,${showInk?0.3:0.5})`;G.lineWidth=0.45;G.stroke();
+      if(o.sp>0.12){
+        G.beginPath();G.moveTo(o.A.px,o.A.py);G.lineTo(o.B.px,o.B.py);G.lineTo(o.T.px,o.T.py);G.closePath();
+        G.fillStyle=`rgba(255,255,255,${o.sp*0.2})`;G.fill();
+      }
+    }
+    else if(o.type==='capB'){
+      G.beginPath();o.pts.forEach((p,i)=>i?G.lineTo(p.px,p.py):G.moveTo(p.px,p.py));G.closePath();
+      G.fillStyle=showInk?'rgba(180,200,220,0.55)':'rgba(200,220,235,0.85)';G.fill();
+      G.strokeStyle='rgba(100,140,180,0.4)';G.lineWidth=0.6;G.stroke();
+    }
+    else if(o.type==='capF'){
+      G.beginPath();o.pts.forEach((p,i)=>i?G.lineTo(p.px,p.py):G.moveTo(p.px,p.py));G.closePath();
+      G.fillStyle=showInk?'rgba(180,200,220,0.45)':'rgba(200,220,235,0.8)';G.fill();
+      G.strokeStyle='rgba(100,140,180,0.35)';G.lineWidth=0.5;G.stroke();
+    }
+  }
+
+  // metal tip ball at very end (when body shown)
+  if(showBody){
+    const tipEnd=pr(0,0,TIP_Z+1);
+    G.beginPath();G.arc(tipEnd.px,tipEnd.py,3.4*tipEnd.sc,0,Math.PI*2);
+    const grd=G.createRadialGradient(tipEnd.px-tipEnd.sc,tipEnd.py-tipEnd.sc,0.2,tipEnd.px,tipEnd.py,3.5*tipEnd.sc);
+    grd.addColorStop(0,'#e8e8ee');grd.addColorStop(0.5,'#888898');grd.addColorStop(1,'#333340');
+    G.fillStyle=grd;G.fill();
+  }
+
+  // clip
+  drawClip(showBody,showInk);
+
+  // label
+  G.save();G.font='500 12px sans-serif';
+  G.fillStyle='rgba(30,60,130,0.55)';G.textAlign='center';
+  const modes={all:'esfero-regla triangular · 15 cm',ink:'cartucho de tinta · triangular',body:'cuerpo · plástico transparente'};
+  G.fillText(modes[MODE],330,468);G.restore();
+}
+
+function drawClip(showBody){
+  if(!showBody)return;
+  const segs=18,cOff=-15.5,cW=2.4;
+  const faces=[];
+  for(let i=0;i<segs;i++){
+    const t0=i/segs,t1=(i+1)/segs;
+    const za=Z0+10+(Z1-Z0-18)*t0,zb=Z0+10+(Z1-Z0-18)*t1;
+    const bow=Math.sin(t0*Math.PI)*2;
+    const A=pr(-cW/2,cOff-bow,za),B=pr(cW/2,cOff-bow,za);
+    const C=pr(cW/2,cOff-Math.sin(t1*Math.PI)*2,zb),D=pr(-cW/2,cOff-Math.sin(t1*Math.PI)*2,zb);
+    faces.push({A,B,C,D,z:(A.z+B.z+C.z+D.z)/4,i});
+  }
+  faces.sort((a,b)=>b.z-a.z);
+  for(const f of faces){
+    G.beginPath();G.moveTo(f.A.px,f.A.py);G.lineTo(f.B.px,f.B.py);G.lineTo(f.C.px,f.C.py);G.lineTo(f.D.px,f.D.py);G.closePath();
+    const v=148+f.i*2|0;
+    G.fillStyle=`rgb(${v},${v},${v+4})`;G.fill();
+    G.strokeStyle='rgba(0,0,0,0.08)';G.lineWidth=0.3;G.stroke();
+  }
+  const ball=pr(0,cOff,Z0+6);
+  G.beginPath();G.arc(ball.px,ball.py,3*ball.sc,0,Math.PI*2);
+  G.fillStyle='#c0c0c8';G.fill();
+}
+
+rd();
+</script>
